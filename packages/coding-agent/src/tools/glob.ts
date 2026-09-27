@@ -1,0 +1,508 @@
+import type { GlobToolDetails } from "@zag/zag-tui/tools/glob";
+import * as fs from "node:fs";
+import { type } from "@zag/zagtype";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@zag/zag-agent-core";
+import * as natives from "@zag/zag-natives";
+import { formatGroupedPaths, hasFsCode, isEnoent, prompt, untilAborted } from "@zag/zag-utils";
+import { InternalUrlRouter, sessionResolveContext } from "../internal-urls";
+import { InternalUrlFilesystem, type UrlFileStat } from "../internal-urls/url-filesystem";
+import globDescription from "../prompts/tools/glob.md" with { type: "text" };
+import { truncateHead } from "@zag/zag-tui/tools/streaming-output";
+import { sessionDelegationBias } from "../task/prompt-policy";
+import { isScoutSpawnable } from "../task/spawn-policy";
+import type { ToolSession } from ".";
+import { resolveToolTier } from "./approval";
+import { isFindEnabled } from "./jfind";
+import { applyListLimit } from "@zag/zag-tui/tools/list-limit";
+import {
+	expandDelimitedPathEntries,
+	formatPathRelativeToCwd,
+	normalizePathLikeInput,
+	parseFindPattern,
+	partitionExistingPaths,
+	resolveExplicitFindPatterns,
+	resolveSearchBase,
+	resolveSearchResultPath,
+} from "./path-utils";
+import { toPathList } from "@zag/zag-tui/render/render-utils";
+import { ToolAbortError, throwIfAborted } from "./tool-errors";
+import { ToolError } from "@zag/zag-tui/tools/tool-errors";
+import { toolResult } from "./tool-result";
+
+import { cfgTaskDisabledAgents } from "../task/settings";
+
+const findSchema = type({
+	"path?": "string",
+	"hidden?": "boolean",
+	"gitignore?": "boolean",
+	"limit?": "number",
+});
+
+export type GlobToolInput = typeof findSchema.infer;
+
+const DEFAULT_LIMIT = 200;
+const MAX_LIMIT = 200;
+const DEFAULT_GLOB_TIMEOUT_MS = 5000;
+
+/**
+ * Pluggable operations for the find tool.
+ * Override these to delegate file search to remote systems (e.g., SSH).
+ */
+export interface GlobOperations {
+	/** Check if path exists */
+	exists: (absolutePath: string) => Promise<boolean> | boolean;
+	/** Optional stat for distinguishing files vs directories. */
+	stat?: (
+		absolutePath: string,
+	) => Promise<{ isFile(): boolean; isDirectory(): boolean }> | { isFile(): boolean; isDirectory(): boolean };
+	/** Find files matching glob pattern. Returns relative paths. */
+	glob: (pattern: string, cwd: string, options: { ignore: string[]; limit: number }) => Promise<string[]> | string[];
+}
+
+export interface GlobToolOptions {
+	/** Custom operations for find. Default: local filesystem + rg */
+	operations?: GlobOperations;
+	/** Remap slash-only paths to the session cwd before root-search validation. */
+	rootPathAlias?: boolean;
+	/** Native glob binding. Override only in tests. */
+	nativeGlob?: typeof natives.glob;
+	/** Filesystem stat used before native scans. Override only in tests. */
+	stat?: typeof fs.promises.stat;
+	/** Native and user-facing scan timeout. Override only in tests. */
+	timeoutMs?: number;
+}
+
+interface GlobTarget {
+	searchPath: string;
+	globPattern: string;
+	hasGlob: boolean;
+}
+
+interface NativePreparedTarget {
+	target: GlobTarget;
+	result?: Array<{ path: string; mtime: number }>;
+}
+
+export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
+	readonly name = "glob";
+	readonly approval = "read" as const;
+	readonly loadMode = "essential";
+	readonly label = "Glob";
+	get description(): string {
+		return prompt.render(globDescription, {
+			hasFind: this.session.isToolActive?.("find") ?? isFindEnabled(this.session),
+			eagerDelegation: sessionDelegationBias(this.session) === "eager",
+			scoutAvailable: isScoutSpawnable(
+				cfgTaskDisabledAgents.get(this.session.settings),
+				this.session.getSessionSpawns?.() ?? "*",
+			),
+		});
+	}
+	readonly parameters = findSchema;
+
+	readonly strict = true;
+
+	readonly #customOps?: GlobOperations;
+	readonly #rootPathAlias: boolean;
+	readonly #nativeGlob: typeof natives.glob;
+	readonly #stat: typeof fs.promises.stat;
+	readonly #timeoutMs: number;
+
+	constructor(
+		private readonly session: ToolSession,
+		options?: GlobToolOptions,
+	) {
+		this.#customOps = options?.operations;
+		this.#rootPathAlias = options?.rootPathAlias === true;
+		this.#nativeGlob = options?.nativeGlob ?? natives.glob;
+		this.#stat = options?.stat ?? fs.promises.stat;
+		this.#timeoutMs = options?.timeoutMs ?? DEFAULT_GLOB_TIMEOUT_MS;
+		if (!Number.isFinite(this.#timeoutMs) || this.#timeoutMs <= 0) {
+			throw new TypeError("Glob timeout must be a positive number");
+		}
+	}
+
+	async execute(
+		_toolCallId: string,
+		params: typeof findSchema.infer,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<GlobToolDetails>,
+		_context?: AgentToolContext,
+	): Promise<AgentToolResult<GlobToolDetails>> {
+		const { path: pathInput, limit, hidden, gitignore } = params;
+
+		throwIfAborted(signal);
+		// Preparation still rejects immediately on caller abort. Once every
+		// filesystem stat has settled, detach this proxy before launching native
+		// scans so execute can drain each worker through the real caller signal.
+		// Custom operations have no signal API and keep immediate abort coverage
+		// for their entire execution.
+		const preparationController = !this.#customOps?.glob && signal ? new AbortController() : undefined;
+		const abortPreparation = (): void => preparationController?.abort();
+		if (preparationController && signal) {
+			signal.addEventListener("abort", abortPreparation, { once: true });
+		}
+		const immediateAbortSignal = this.#customOps?.glob ? signal : preparationController?.signal;
+		const execution = untilAborted(immediateAbortSignal, async () => {
+			const formatScopePath = (targetPath: string): string => formatPathRelativeToCwd(targetPath, this.session.cwd);
+			const scopedPaths = toPathList(pathInput);
+			const effectivePaths = scopedPaths.length > 0 ? scopedPaths : ["."];
+			const rawPatternInputs = this.#customOps
+				? effectivePaths
+				: await expandDelimitedPathEntries(effectivePaths, this.session.cwd, { splitter: parseFindPattern });
+			const rawPatterns = rawPatternInputs.map(input => normalizePathLikeInput(input).replace(/\\/g, "/"));
+			const aliasResolvedPatterns = this.#rootPathAlias
+				? rawPatterns.map(pattern => (/^\/+$/.test(pattern) ? "." : pattern))
+				: rawPatterns;
+			if (aliasResolvedPatterns.some(pattern => /^\/+$/.test(pattern))) {
+				throw new ToolError("Searching from root directory '/' is not allowed");
+			}
+			const internalRouter = InternalUrlRouter.instance();
+			// Internal URLs resolve inside the native walk, bounded by the tier this call was approved at.
+			const urlFilesystem = new InternalUrlFilesystem({
+				context: sessionResolveContext(this.session, { signal }),
+				tier: resolveToolTier(this, params),
+			});
+			const normalizedPatterns = aliasResolvedPatterns.map(pattern => internalRouter.normalize(pattern));
+			if (normalizedPatterns.some(pattern => pattern.length === 0)) {
+				throw new ToolError("`path` must contain non-empty globs or paths");
+			}
+
+			// Tolerate missing entries in a multi-path call: skip ones whose base
+			// directory is gone, and only error if every entry is missing. Single
+			// missing path keeps the original ENOENT semantics — the user explicitly
+			// asked about that one path, so silent empty results would be misleading.
+			let missingPaths: string[] = [];
+			let effectivePatterns = normalizedPatterns;
+			if (normalizedPatterns.length > 1 && !this.#customOps) {
+				const partition = await partitionExistingPaths(
+					normalizedPatterns,
+					this.session.cwd,
+					parseFindPattern,
+					urlFilesystem,
+				);
+				if (partition.valid.length === 0) {
+					throw new ToolError(`Path not found: ${partition.missing.join(", ")}`);
+				}
+				effectivePatterns = partition.valid;
+				missingPaths = partition.missing;
+			}
+
+			const multiPattern = await resolveExplicitFindPatterns(effectivePatterns, this.session.cwd);
+			const isSingle = !multiPattern;
+			const targets: GlobTarget[] = multiPattern
+				? multiPattern.targets.map(target => ({
+						searchPath: target.basePath,
+						globPattern: target.globPattern,
+						hasGlob: target.hasGlob,
+					}))
+				: [
+						(() => {
+							const parsed = parseFindPattern(effectivePatterns[0] ?? ".");
+							return {
+								searchPath: resolveSearchBase(parsed.basePath, this.session.cwd),
+								globPattern: parsed.globPattern,
+								hasGlob: parsed.hasGlob,
+							};
+						})(),
+					];
+			const scopePath = multiPattern?.scopePath ?? formatScopePath(targets[0].searchPath);
+
+			for (const target of targets) {
+				if (target.searchPath === "/") {
+					throw new ToolError("Searching from root directory '/' is not allowed");
+				}
+			}
+
+			const requestedLimit = limit ?? DEFAULT_LIMIT;
+			if (!Number.isFinite(requestedLimit) || requestedLimit <= 0) {
+				throw new ToolError("Limit must be a positive number");
+			}
+			const effectiveLimit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(requestedLimit)));
+			const includeHidden = hidden ?? true;
+			const useGitignore = gitignore ?? true;
+			const timeoutMs = this.#timeoutMs;
+			const timeoutSignal = AbortSignal.timeout(timeoutMs);
+			const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+			const formatMatchPath = (matchPath: string, base: string, fileType?: natives.FileType): string => {
+				const hadTrailingSlash = matchPath.endsWith("/") || matchPath.endsWith("\\");
+				return formatPathRelativeToCwd(resolveSearchResultPath(base, matchPath), this.session.cwd, {
+					trailingSlash: fileType === natives.FileType.Dir || hadTrailingSlash,
+				});
+			};
+
+			const missingPathsNote =
+				missingPaths.length > 0 ? `Skipped missing paths: ${missingPaths.join(", ")}` : undefined;
+
+			const buildResult = (
+				files: string[],
+				opts?: { notice?: string; forceTruncated?: boolean; timedOut?: boolean },
+			): AgentToolResult<GlobToolDetails> => {
+				const notice = opts?.notice;
+				const forceTruncated = opts?.forceTruncated ?? false;
+				if (files.length === 0) {
+					const details: GlobToolDetails = {
+						scopePath,
+						fileCount: 0,
+						files: [],
+						truncated: forceTruncated,
+						cwd: this.session.cwd,
+						missingPaths: missingPaths.length > 0 ? missingPaths : undefined,
+					};
+					// A timed-out empty result is an incomplete scan, not a verified
+					// absence — never emit the definitive "No files found" claim next
+					// to a timeout notice (the two statements contradict each other).
+					const parts = opts?.timedOut ? [] : ["No files found matching pattern"];
+					if (notice) parts.push(notice);
+					if (missingPathsNote) parts.push(missingPathsNote);
+					// Zero results is useless regardless of notices: the follow-up
+					// call has already corrected course by the time compaction runs.
+					return toolResult(details).text(parts.join("\n")).useless().done();
+				}
+
+				const listLimit = applyListLimit(files, { limit: effectiveLimit });
+				const limited = listLimit.items;
+				const limitMeta = listLimit.meta;
+				const baseOutput = formatGroupedPaths(limited);
+				const trailingNotes: string[] = [];
+				if (notice) trailingNotes.push(notice);
+				if (missingPathsNote) trailingNotes.push(missingPathsNote);
+				const rawOutput = trailingNotes.length > 0 ? `${baseOutput}\n\n${trailingNotes.join("\n")}` : baseOutput;
+				const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
+
+				const details: GlobToolDetails = {
+					scopePath,
+					fileCount: limited.length,
+					files: limited,
+					truncated: Boolean(forceTruncated || limitMeta.resultLimit || truncation.truncated),
+					resultLimitReached: limitMeta.resultLimit?.reached,
+					truncation: truncation.truncated ? truncation : undefined,
+					cwd: this.session.cwd,
+					missingPaths: missingPaths.length > 0 ? missingPaths : undefined,
+				};
+
+				const resultBuilder = toolResult(details)
+					.text(truncation.content)
+					.limits({ resultLimit: limitMeta.resultLimit?.reached });
+				if (truncation.truncated) {
+					resultBuilder.truncation(truncation, { direction: "head" });
+				}
+
+				return resultBuilder.done();
+			};
+
+			// Walk each user path as its own root and run the globs concurrently.
+			// Collapsing multiple paths to a shared base would force the walker to
+			// traverse and stat every unrelated sibling under that ancestor; per-path
+			// roots keep each scan bounded to exactly what the user asked for.
+			if (this.#customOps?.glob) {
+				const customOps = this.#customOps;
+				const perTarget = await Promise.all(
+					targets.map(async target => {
+						if (!(await customOps.exists(target.searchPath))) {
+							if (isSingle) throw new ToolError(`Path not found: ${scopePath}`);
+							return [] as string[];
+						}
+						if (!target.hasGlob && customOps.stat) {
+							const stat = await customOps.stat(target.searchPath);
+							if (stat.isFile()) return [formatScopePath(target.searchPath)];
+						}
+						const results = await customOps.glob(target.globPattern, target.searchPath, {
+							ignore: ["**/node_modules/**", "**/.git/**"],
+							limit: effectiveLimit,
+						});
+						return results.map(matchPath => formatMatchPath(matchPath, target.searchPath));
+					}),
+				);
+				const seen = new Set<string>();
+				const merged: string[] = [];
+				for (const group of perTarget) {
+					for (const entry of group) {
+						if (seen.has(entry)) continue;
+						seen.add(entry);
+						merged.push(entry);
+					}
+				}
+				return buildResult(merged);
+			}
+
+			const preparedTargets: NativePreparedTarget[] = await Promise.all(
+				targets.map(async target => {
+					throwIfAborted(signal);
+					let stat: UrlFileStat;
+					if (internalRouter.canHandle(target.searchPath)) {
+						// A URL failure carries its handler's diagnosis (`Artifact 9 not found. Available: 4`).
+						stat = await urlFilesystem.stat(target.searchPath).catch((err: unknown) => {
+							throw new ToolError(
+								`Cannot glob ${target.searchPath}: ${err instanceof Error ? err.message : String(err)}`,
+							);
+						});
+					} else {
+						try {
+							const hostStat = await this.#stat(target.searchPath);
+							stat = {
+								type: hostStat.isDirectory() ? "directory" : hostStat.isFile() ? "file" : "other",
+								size: hostStat.size,
+								mtimeMs: hostStat.mtimeMs,
+							};
+						} catch (err) {
+							// ENAMETOOLONG can never name a real target; surface a clean
+							// "Path not found" instead of leaking the raw errno (issue #7597).
+							if (isEnoent(err) || hasFsCode(err, "ENAMETOOLONG")) {
+								if (isSingle) throw new ToolError(`Path not found: ${scopePath}`);
+								return { target, result: [] };
+							}
+							throw err;
+						}
+					}
+					if (!target.hasGlob && stat.type === "file") {
+						return {
+							target,
+							result: [{ path: formatScopePath(target.searchPath), mtime: stat.mtimeMs }],
+						};
+					}
+					if (stat.type !== "directory") {
+						if (isSingle) throw new ToolError(`Path is not a directory: ${target.searchPath}`);
+						return { target, result: [] };
+					}
+					return { target };
+				}),
+			);
+			const nativeScanPending = preparedTargets.some(prepared => prepared.result === undefined);
+			if (nativeScanPending && preparationController && signal) {
+				signal.removeEventListener("abort", abortPreparation);
+			}
+			throwIfAborted(signal);
+
+			const onUpdateMatches: string[] = [];
+			const onUpdateMtimes: number[] = [];
+			const updateIntervalMs = 200;
+			let lastUpdate = 0;
+			const emitUpdate = () => {
+				if (!onUpdate) return;
+				const now = Date.now();
+				if (now - lastUpdate < updateIntervalMs) return;
+				lastUpdate = now;
+				const details: GlobToolDetails = {
+					scopePath,
+					fileCount: onUpdateMatches.length,
+					files: onUpdateMatches.slice(),
+					truncated: false,
+				};
+				onUpdate({
+					content: [{ type: "text", text: onUpdateMatches.join("\n") }],
+					details,
+				});
+			};
+			const streamed = new Set<string>();
+			const makeOnMatch =
+				(base: string) =>
+				(err: Error | null, match: natives.GlobMatch | null): void => {
+					if (err || combinedSignal.aborted || !match?.path) return;
+					const relativePath = formatMatchPath(match.path, base, match.fileType);
+					if (streamed.has(relativePath)) return;
+					streamed.add(relativePath);
+					onUpdateMatches.push(relativePath);
+					onUpdateMtimes.push(match.mtime ?? 0);
+					emitUpdate();
+				};
+
+			let timedOut = false;
+			const runTarget = async (prepared: NativePreparedTarget): Promise<Array<{ path: string; mtime: number }>> => {
+				if (prepared.result) return prepared.result;
+				const { target } = prepared;
+				try {
+					const result = await this.#nativeGlob(
+						{
+							pattern: target.globPattern,
+							path: target.searchPath,
+							hidden: includeHidden,
+							maxResults: effectiveLimit,
+							sortByMtime: true,
+							gitignore: useGitignore,
+							// parseFindPattern explicitly prepends "**/" when the user's
+							// pattern begins with a glob (so `*.ts` becomes `**/*.ts`).
+							// Anything that arrives here without "**/" was scoped to a
+							// single directory by the user (e.g. `dir/*`); disable the
+							// native auto-recursion so `dir/*` does not silently match
+							// `dir/sub/nested.ts`.
+							recursive: false,
+							signal: combinedSignal,
+							timeoutMs,
+							filesystem: urlFilesystem.shellFilesystem(),
+						},
+						makeOnMatch(target.searchPath),
+					);
+					throwIfAborted(signal);
+					const out: Array<{ path: string; mtime: number }> = [];
+					for (const match of result.matches) {
+						if (!match.path) continue;
+						out.push({
+							path: formatMatchPath(match.path, target.searchPath, match.fileType),
+							mtime: match.mtime ?? 0,
+						});
+					}
+					return out;
+				} catch (error) {
+					const nativeAbort =
+						error instanceof Error &&
+						(error.name === "AbortError" || error.name === "TimeoutError" || error.message.includes("Aborted:"));
+					if (nativeAbort) {
+						if (
+							!signal?.aborted &&
+							(timeoutSignal.aborted || (error instanceof Error && error.message.includes("Aborted: Timeout")))
+						) {
+							timedOut = true;
+							return [];
+						}
+						throw new ToolAbortError();
+					}
+					throw error;
+				}
+			};
+
+			const settledTargets = await Promise.allSettled(preparedTargets.map(runTarget));
+			const perTarget = settledTargets.map(result => {
+				if (result.status === "rejected") throw result.reason;
+				return result.value;
+			});
+
+			if (timedOut) {
+				// Drain the partial matches accumulated during streaming and return them
+				// instead of throwing — empty results after a multi-second wait force the
+				// caller to retry blind, which is the worst possible outcome.
+				const partial = onUpdateMatches.map((entry, index) => ({ p: entry, m: onUpdateMtimes[index] ?? 0 }));
+				partial.sort((a, b) => b.m - a.m);
+				const sortedPaths = partial.map(entry => entry.p);
+				const seconds = timeoutMs % 1000 === 0 ? `${timeoutMs / 1000}` : (timeoutMs / 1000).toFixed(1);
+				// Walk cost tracks directory-tree size, not pattern specificity: a
+				// mtime-ranked scan cannot early-exit, so a "narrow" pattern over a
+				// huge tree still times out. Say so instead of implying the pattern
+				// was too broad.
+				const notice =
+					sortedPaths.length > 0
+						? `glob timed out after ${seconds}s; returning ${sortedPaths.length} partial matches — results are incomplete, scope to a deeper directory instead of retrying blindly`
+						: `Glob timed out after ${seconds}s before finding any matches — the scan is incomplete, NOT proof of absence. The walk is bounded by directory size, not pattern width; scope the search to a deeper directory (e.g. \`sub/dir/*.ext\` instead of \`*.ext\` at a huge root).`;
+				return buildResult(sortedPaths, { notice, forceTruncated: true, timedOut: true });
+			}
+
+			// Merge per-target results: native glob already ranks each target's own
+			// matches by mtime and caps them at the limit, so a global mtime re-sort
+			// plus dedup yields the correct top-N across all roots.
+			const seen = new Set<string>();
+			const merged: Array<{ path: string; mtime: number }> = [];
+			for (const group of perTarget) {
+				for (const entry of group) {
+					if (seen.has(entry.path)) continue;
+					seen.add(entry.path);
+					merged.push(entry);
+				}
+			}
+			merged.sort((a, b) => b.mtime - a.mtime);
+			return buildResult(merged.map(entry => entry.path));
+		});
+		return execution.finally(() => {
+			signal?.removeEventListener("abort", abortPreparation);
+		});
+	}
+}

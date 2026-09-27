@@ -1,0 +1,83 @@
+# Build context for the zag-root `Dockerfile` (zag/zag:dev). Shadows
+# .dockerignore for this file only. Robozag uses Dockerfile.robozag +
+# Dockerfile.robozag.dockerignore alongside.
+
+# Heavy build outputs — must never reach the build context. Patterns are
+# depth-agnostic (`**/`) to match .gitignore semantics: dockerignore anchors
+# bare `target/`/`dist/` at the context root only, which leaked
+# packages/*/dist (~600 MB) and go-port/*/target (~1.4 GB) into every build.
+# `bazel-*` symlinks point at the bazel output base.
+**/target/
+bazel-*
+**/node_modules
+**/dist/
+runs/
+.xwin-cache/
+packages/coding-agent/binaries/
+packages/natives/npm/
+**/.cache/
+packages/snapcompact/research/results/
+
+# Per-host scratch the zag codebase uses for parallel agents / worktrees.
+.fallow/
+.worktrees/
+.wt/
+.opencode/
+.zag_config/
+.zag/plugins/
+
+# VCS, editors, IDEs — irrelevant to the build, churn on every IDE keystroke.
+.git/
+.npm/
+.vscode/
+.zed/
+.idea/
+
+# OS + transient noise.
+.DS_Store
+*.swp
+*.swo
+*~
+*.tmp
+
+# Logs + profiling artifacts.
+*.log
+*.cpuprofile
+*.heapprofile
+*.heapsnapshot
+CPU.*
+
+# Build / test side outputs.
+**/*.tsbuildinfo
+**/coverage/
+.nyc_output/
+**/__pycache__/
+compaction-results/
+changes/
+
+# Generated files (the in-image build regenerates them).
+packages/coding-agent/src/internal-urls/docs-index.generated.ts
+packages/natives/native/.build/
+# Every host-built addon: natives-builder compiles its own, and a stale host
+# `zag_natives.linux-*.node` riding in would be copied to /out alongside it.
+# (Also drops the ~760 MB of dev addons a working checkout accumulates.)
+**/*.node
+packages/ai/test/.temp-images/
+python/zag-rpc/src/zag_rpc.egg-info/
+python/robozag/data/
+python/robozag/.cache/
+python/robozag/src/robozag/static/
+python/robozag/web/dist/
+
+# Scratch files the repo creates ad-hoc.
+syntax.jsonl
+out.jsonl
+out.html
+zag-*.html
+
+# Host virtualenvs — the image installs its own interpreter deps.
+**/.venv/
+
+# Secrets. Should never be in the image regardless. Depth-agnostic: a bare
+# `.env` misses `python/robozag/.env`, which `COPY . /zag/` would bake in.
+**/.env

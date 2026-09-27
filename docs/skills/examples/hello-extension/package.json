@@ -1,0 +1,9 @@
+{
+  "name": "hello-extension",
+  "version": "1.0.0",
+  "description": "Minimal zag extension example",
+  "homepage": "https://github.com/rezgaraam/zag",
+  "zag": {
+    "extensions": ["./index.ts"]
+  }
+}

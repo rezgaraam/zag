@@ -1,0 +1,82 @@
+# syntax=docker/dockerfile:1.7-labs
+###############################################################################
+# robozag — GitHub triage+fix bot orchestrator.
+#
+# Extends `zag-base` (from /Dockerfile, default target zag/zag:dev) and adds
+# the robozag Python package + a Vite-built SolidJS dashboard bundle. The zag
+# toolchain (python + bun + rustup launcher + zag-natives + zag_rpc wheel +
+# /usr/local/bin/zag shim) all comes from ZAG_BASE; this file only layers what's
+# robozag-specific.
+#
+# Build (from zag root):
+#     bun run zag:image                              # build zag/zag:dev first
+#     docker build -f Dockerfile.robozag -t robozag:dev .
+#
+# Compose (recommended):
+#     docker compose --project-directory python/robozag build
+###############################################################################
+
+ARG ZAG_BASE=zag/zag:dev
+ARG BUN_VERSION=1.4.2
+
+############################
+# 1) web-builder — Bun + Vite, builds the SolidJS dashboard bundle.
+############################
+FROM oven/bun:${BUN_VERSION}-slim AS web-builder
+WORKDIR /work
+# Root manifests + the web workspace manifest are enough for `bun install
+# --filter robozag-web` to hydrate just the dashboard's node_modules.
+COPY package.json bun.lock ./
+COPY python/robozag/web/package.json ./python/robozag/web/package.json
+# Root package.json declares patchedDependencies, so the patch file must be
+# present before any root-level `bun install` (even a filtered one).
+COPY patches/*.patch ./patches/
+RUN bun install --filter robozag-web
+COPY --exclude=node_modules --exclude=dist python/robozag/web/ ./python/robozag/web/
+RUN bun --cwd=python/robozag/web run build
+
+############################
+# 2) runtime — zag-base + robozag src + web bundle + pip install
+############################
+FROM ${ZAG_BASE} AS runtime
+
+# robozag runs against the host zag checkout mounted at /work/zag read-only.
+ENV ZAG_ROOT=/work/zag
+
+WORKDIR /app
+
+# robozag is an MIT product; ZAG's dual-license payload remains available from
+# the inherited base image under /usr/share/doc/zag.
+COPY LICENSE THIRD-PARTY-NOTICES.txt /usr/share/doc/robozag/
+
+# robozag itself. Drop the Vite-built dashboard into the package tree before
+# `pip install` so it lands in the installed wheel (`static/**/*` is declared
+# as package-data in pyproject.toml).
+COPY python/robozag/pyproject.toml ./
+COPY python/robozag/src/ ./src/
+COPY --from=web-builder /work/python/robozag/web/dist/ ./src/static/
+
+RUN pip install --no-cache-dir \
+        "fastapi>=0.112" "uvicorn[standard]>=0.30" "httpx>=0.27" \
+        "pydantic>=2.6" "pydantic-settings>=2.2" "python-dotenv>=1.0" \
+        "click>=8.1" \
+    && pip install --no-cache-dir --no-deps .
+
+# Host agent config is mounted read-only under /srv/agent-home-stage with
+# host-controlled permissions. The entrypoint copies it into root-owned
+# world-readable files under /srv/agent-home; the agent subprocess runs with
+# HOME=/srv/agent-home, so ~/.zag and ~/.agent resolve there without exposing
+# mutable host mounts.
+RUN mkdir -p /srv/agent-home/.agent /srv/agent-home/.zag/agent \
+    && mkdir -p /srv/agent-home-stage/.agent /srv/agent-home-stage/.zag/agent \
+    && printf '[install]\nbackend = "copyfile"\n' > /srv/agent-home/.bunfig.toml
+
+COPY python/robozag/entrypoint.sh /usr/local/bin/robozag-entrypoint
+RUN chmod +x /usr/local/bin/robozag-entrypoint
+
+VOLUME ["/data"]
+EXPOSE 8080
+EXPOSE 8081
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/robozag-entrypoint"]
+CMD ["python", "-m", "robozag", "serve"]

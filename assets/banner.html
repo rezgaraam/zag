@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zag Logo</title>
+  <!-- Source of assets/hero.png: render at 1500x540 (see README hero). -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 1500px;
+      height: 540px;
+      overflow: hidden;
+      background: #0c0a12;
+      font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    }
+    .banner {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(ellipse 420px 300px at 50% 36%, rgba(96, 150, 235, 0.22), transparent 70%),
+        radial-gradient(ellipse 260px 200px at 55% 30%, rgba(255, 150, 50, 0.16), transparent 70%),
+        #0c0a12;
+    }
+    .grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+      background-size: 48px 48px;
+    }
+    .ridge {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      opacity: 0.5;
+    }
+    .ridge.left { left: 22px; }
+    .ridge.right { right: 22px; }
+    .corner {
+      position: absolute;
+      width: 28px;
+      height: 28px;
+      border: 0 solid rgba(120, 170, 240, 0.35);
+    }
+    .corner.tl { top: 22px; left: 22px; border-top-width: 1px; border-left-width: 1px; }
+    .corner.tr { top: 22px; right: 22px; border-top-width: 1px; border-right-width: 1px; }
+    .corner.bl { bottom: 22px; left: 22px; border-bottom-width: 1px; border-left-width: 1px; }
+    .corner.br { bottom: 22px; right: 22px; border-bottom-width: 1px; border-right-width: 1px; }
+    .content {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 78px;
+    }
+    .mark {
+      width: 188px;
+      height: 188px;
+      filter: drop-shadow(0 18px 40px rgba(52, 96, 190, 0.45));
+    }
+    .wordmark {
+      margin-top: 26px;
+      font-family: -apple-system, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+      font-size: 76px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -0.03em;
+      color: #f4f1f8;
+    }
+    .tagline {
+      margin-top: 30px;
+      font-size: 15px;
+      letter-spacing: 0.42em;
+      color: rgba(255, 255, 255, 0.42);
+    }
+    .status {
+      margin-top: 18px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      letter-spacing: 0.16em;
+      color: rgba(255, 255, 255, 0.5);
+    }
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #ff9632;
+      box-shadow: 0 0 12px rgba(255, 150, 50, 0.8);
+    }
+  </style>
+</head>
+<body>
+  <div class="banner">
+    <div class="grid"></div>
+
+    <!-- Zigzag ridgelines framing the mark -->
+    <svg class="ridge left" width="24" height="150" viewBox="0 0 24 150">
+      <path d="M8 0 V56 L18 66 L8 76 L18 86 L8 96 V150" stroke="#6096eb" stroke-width="1.5" fill="none"/>
+    </svg>
+    <svg class="ridge right" width="24" height="150" viewBox="0 0 24 150">
+      <path d="M16 0 V56 L6 66 L16 76 L6 86 L16 96 V150" stroke="#6096eb" stroke-width="1.5" fill="none"/>
+    </svg>
+
+    <div class="content">
+      <img class="mark" src="icon.svg" alt="">
+      <div class="wordmark">zag</div>
+      <div class="tagline">[ AI CODING AGENT ]</div>
+      <div class="status">
+        <span class="status-dot"></span>
+        <span>MCP · LSP · SUBAGENTS · WEB SEARCH</span>
+      </div>
+    </div>
+
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+  </div>
+</body>
+</html>

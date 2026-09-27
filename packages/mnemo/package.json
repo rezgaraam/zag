@@ -1,0 +1,107 @@
+{
+  "type": "module",
+  "name": "@zag/zag-mnemo",
+  "version": "1.0.0",
+  "description": "Local SQLite memory engine for zag agents",
+  "homepage": "https://github.com/rezgaraam/zag",
+  "author": { "name": "Stencil Labs, Inc.", "url": "https://stencil.so" },
+  "contributors": [
+    "Abdias J"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rezgaraam/zag.git",
+    "directory": "packages/mnemo"
+  },
+  "bugs": {
+    "url": "https://github.com/rezgaraam/zag/issues"
+  },
+  "keywords": [
+    "memory",
+    "sqlite",
+    "agent",
+    "embeddings",
+    "mcp"
+  ],
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "bin": {
+    "mnemo": "src/cli.ts"
+  },
+  "scripts": {
+    "check": "oxlint . && oxfmt --check --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts' && bun run check:types",
+    "check:types": "tsgo -p tsconfig.json --noEmit",
+    "lint": "oxlint .",
+    "test": "bun test --parallel",
+    "fix": "oxlint --fix --fix-suggestions . && bun run fmt",
+    "fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts'"
+  },
+  "dependencies": {
+    "@zag/zag-ai": "catalog:",
+    "@zag/zag-catalog": "catalog:",
+    "@zag/zag-natives": "catalog:",
+    "@zag/zag-utils": "catalog:"
+  },
+  "peerDependencies": {
+    "fastembed": "2.1.0",
+    "onnxruntime-node": "1.21.0"
+  },
+  "peerDependenciesMeta": {
+    "fastembed": {
+      "optional": true
+    },
+    "onnxruntime-node": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "fastembed": "catalog:",
+    "onnxruntime-node": "catalog:"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./core": {
+      "types": "./src/core/index.ts",
+      "import": "./src/core/index.ts"
+    },
+    "./core/beam": {
+      "types": "./src/core/beam/index.ts",
+      "import": "./src/core/beam/index.ts"
+    },
+    "./beam": {
+      "types": "./src/core/beam/index.ts",
+      "import": "./src/core/beam/index.ts"
+    },
+    "./diagnose": {
+      "types": "./src/diagnose.ts",
+      "import": "./src/diagnose.ts"
+    },
+    "./mcp": {
+      "types": "./src/mcp-tools.ts",
+      "import": "./src/mcp-tools.ts"
+    },
+    "./cli": {
+      "types": "./src/cli.ts",
+      "import": "./src/cli.ts"
+    },
+    "./*": {
+      "types": "./src/*.ts",
+      "import": "./src/*.ts"
+    },
+    "./*.js": "./src/*.ts"
+  }
+}

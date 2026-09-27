@@ -1,0 +1,98 @@
+# Build context for `Dockerfile.robozag` (robozag:dev). Shadows .dockerignore
+# for this file only — the zag-root build uses Dockerfile.dockerignore instead.
+#
+# Note: this duplicates most of the entries in Dockerfile.dockerignore. That's
+# the cost of per-Dockerfile shadows (no shared file to factor common rules
+# into). Keep them roughly in sync.
+
+# Heavy build outputs — must never reach the build context. Depth-agnostic for
+# the same reason as Dockerfile.dockerignore: bare `target/`/`dist/` only match
+# the context root, so nested build dirs (go-port/*/target, packages/*/dist)
+# were shipped on every build.
+**/target/
+bazel-*
+**/node_modules
+**/dist/
+runs/
+.xwin-cache/
+packages/coding-agent/binaries/
+packages/natives/npm/
+packages/natives/native/
+**/.cache/
+packages/snapcompact/research/results/
+# The addon comes from ZAG_BASE; nothing in this context needs one.
+**/*.node
+
+# Per-host scratch the zag codebase uses for parallel agents / worktrees.
+.fallow/
+.worktrees/
+.wt/
+.opencode/
+.zag_config/
+.zag/plugins/
+
+# VCS, editors, IDEs.
+.git/
+.npm/
+.vscode/
+.zed/
+.idea/
+
+# OS + transient noise.
+.DS_Store
+*.swp
+*.swo
+*~
+*.tmp
+
+# Logs + profiling artifacts.
+*.log
+*.cpuprofile
+*.heapprofile
+*.heapsnapshot
+CPU.*
+
+# Build / test side outputs.
+*.tsbuildinfo
+coverage/
+.nyc_output/
+__pycache__/
+compaction-results/
+changes/
+
+# Generated files (the in-image build regenerates them).
+packages/coding-agent/src/internal-urls/docs-index.generated.ts
+packages/natives/native/.build/
+packages/natives/native/zag_natives.darwin-*.node
+packages/natives/native/zag_natives.dev.node
+packages/ai/test/.temp-images/
+python/zag-rpc/src/zag_rpc.egg-info/
+python/robozag/data/
+python/robozag/.cache/
+python/robozag/src/robozag/static/
+python/robozag/web/dist/
+
+# Scratch files the repo creates ad-hoc.
+syntax.jsonl
+out.jsonl
+out.html
+zag-*.html
+
+# Host virtualenvs — the image installs its own interpreter deps.
+**/.venv/
+
+# Secrets. Should never be in the image regardless. Depth-agnostic: a bare
+# `.env` misses `python/robozag/.env`, which sits next to the copied src tree.
+**/.env
+
+# Robozag-only excludes. Natives + wheel + python + bun + rustup all come
+# from ZAG_BASE; the web-builder stage only needs root manifests + the
+# python/robozag/web tree; the runtime stage only COPYs python/robozag/
+# pyproject + src + entrypoint. Everything below is dead weight in the
+# robozag build context.
+crates/
+docs/
+assets/
+scripts/
+AGENTS.md
+README.md

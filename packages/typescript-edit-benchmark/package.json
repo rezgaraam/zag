@@ -1,0 +1,55 @@
+{
+  "type": "module",
+  "private": true,
+  "name": "@zag/typescript-edit-benchmark",
+  "version": "0.0.1",
+  "description": "Edit benchmark suite using TypeScript source code mutations",
+  "homepage": "https://github.com/rezgaraam/zag",
+  "author": { "name": "Stencil Labs, Inc.", "url": "https://stencil.so" },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rezgaraam/zag.git",
+    "directory": "packages/typescript-edit-benchmark"
+  },
+  "exports": {
+    "./*": {
+      "types": "./src/*.ts",
+      "import": "./src/*.ts"
+    },
+    "./*.js": "./src/*.ts"
+  },
+  "scripts": {
+    "check": "oxlint . && oxfmt --check --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts' && bun run check:types",
+    "check:types": "tsgo -p tsconfig.json --noEmit",
+    "lint": "oxlint .",
+    "test": "bun test --parallel",
+    "fix": "oxlint --fix --fix-suggestions . && bun run fmt",
+    "fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts'",
+    "generate": "bun run src/generate.ts --typescript-dir /tmp/zag-mono-source",
+    "edit-shapes": "bun run src/edit-shape-stats.ts"
+  },
+  "dependencies": {
+    "@babel/generator": "catalog:",
+    "@babel/parser": "catalog:",
+    "@babel/traverse": "catalog:",
+    "@babel/types": "catalog:",
+    "@zag/zag-agent-core": "catalog:",
+    "@zag/zag-coding-agent": "catalog:",
+    "@zag/zag-utils": "catalog:",
+    "diff": "catalog:",
+    "@zag/zag-natives": "catalog:",
+    "prettier": "catalog:",
+    "regexp-tree": "catalog:",
+    "@zag/zag-ai": "catalog:",
+    "@zag/zag-tui": "catalog:"
+  },
+  "devDependencies": {
+    "@types/babel__generator": "catalog:",
+    "@types/babel__traverse": "catalog:",
+    "@types/bun": "catalog:"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  }
+}

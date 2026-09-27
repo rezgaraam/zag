@@ -1,0 +1,92 @@
+{
+  "type": "module",
+  "name": "@zag/zag-stats",
+  "version": "1.0.0",
+  "description": "Local observability dashboard for zag AI usage statistics",
+  "homepage": "https://github.com/rezgaraam/zag",
+  "author": { "name": "Stencil Labs, Inc.", "url": "https://stencil.so" },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rezgaraam/zag.git",
+    "directory": "packages/stats"
+  },
+  "bugs": {
+    "url": "https://github.com/rezgaraam/zag/issues"
+  },
+  "keywords": [
+    "ai",
+    "observability",
+    "metrics",
+    "dashboard",
+    "llm",
+    "statistics"
+  ],
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "bin": {
+    "zag-stats": "./src/index.ts"
+  },
+  "scripts": {
+    "gen:stats": "bun scripts/generate-client-bundle.ts --generate",
+    "gen:stats:reset": "bun scripts/generate-client-bundle.ts --reset",
+    "build": "bun run build.ts",
+    "dev": "bun run src/index.ts",
+    "check": "oxlint . && oxfmt --check --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts' && bun run check:types",
+    "check:types": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.client.json --noEmit",
+    "lint": "oxlint .",
+    "fix": "oxlint --fix --fix-suggestions . && bun run fmt",
+    "fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts'"
+  },
+  "dependencies": {
+    "@zag/zag-ai": "catalog:",
+    "@zag/zag-catalog": "catalog:",
+    "@zag/zag-utils": "catalog:",
+    "@tailwindcss/node": "catalog:",
+    "chart.js": "catalog:",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-chartjs-2": "catalog:",
+    "react-dom": "catalog:",
+    "tailwindcss": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "postcss": "catalog:"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "files": [
+    "src",
+    "build.ts",
+    "tailwind.config.js",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./*": {
+      "types": "./src/*.ts",
+      "import": "./src/*.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.tsx",
+      "import": "./src/client/index.tsx"
+    },
+    "./client/*": {
+      "types": "./src/client/*.ts",
+      "import": "./src/client/*.ts"
+    },
+    "./client/components/*": {
+      "types": "./src/client/components/*.ts",
+      "import": "./src/client/components/*.ts"
+    },
+    "./*.js": "./src/*.ts"
+  }
+}
